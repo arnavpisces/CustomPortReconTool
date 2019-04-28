@@ -17,6 +17,7 @@ struct args
 {
  int sockNum;
  char datagram[4096];
+ int option;
 };
 
 struct pseudo_header
@@ -51,14 +52,33 @@ unsigned short csum(unsigned short *ptr,int nbytes)
      
     return(answer);
 }
- 
+void delay(int number_of_seconds) 
+{ 
+    // Converting time into milli_seconds 
+    int milli_seconds = 1000 * number_of_seconds; 
+  
+    // Stroing start time 
+    clock_t start_time = clock(); 
+  
+    // looping till required time is not acheived 
+    while (clock() < start_time + milli_seconds) 
+        ; 
+}
 void *sendRaw(void *arguments){
 
     int i=0;
+    int option=0;
+    struct args *arg = arguments;
+    int sockNum=arg->sockNum;
+    option=arg->option;
+    // printf("the option is %d\n",option);
+
     for(i=0;i<LIMIT;i++){
-        struct args *arg = arguments;
+        if(option==2){
+            // delay(0.05);
+        }
+        if(i==443){continue;}
         // printf("Sock number %d\n",arg->sockNum);
-        int sockNum=arg->sockNum;
         char datagram[4096] , source_ip[32] , dest_ip[32], *data , *pseudogram;
         strcpy(source_ip , "192.168.216.167");
         strcpy(dest_ip , "192.168.216.148");
@@ -99,12 +119,33 @@ void *sendRaw(void *arguments){
         tcph->seq = 0;
         tcph->ack_seq = 27;
         tcph->doff = 5;  //tcp header size
-        tcph->fin=0;
-        tcph->syn=1;
-        tcph->rst=0;
-        tcph->psh=0;
-        tcph->ack=0;
-        tcph->urg=0;
+
+        if(option==1){ //SYN SCAN
+            tcph->fin=0;
+            tcph->syn=1;
+            tcph->rst=0;
+            tcph->psh=0;
+            tcph->ack=0;
+            tcph->urg=0;
+        }
+        else if(option==2){ //FIN SCAN
+            tcph->fin=1;
+            tcph->syn=0;
+            tcph->rst=0;
+            tcph->psh=0;
+            tcph->ack=0;
+            tcph->urg=0;
+        }
+        else if(option==3){ //UDP SCAN
+            tcph->fin=0;
+            tcph->syn=1;
+            tcph->rst=0;
+            tcph->psh=0;
+            tcph->ack=0;
+            tcph->urg=0;
+        }
+        
+
         tcph->window = htons (5840); /* maximum allowed window size */
         tcph->check = 0; //leave checksum 0 now, filled later by pseudo header
         tcph->urg_ptr = 0;
@@ -151,7 +192,15 @@ void *sendRaw(void *arguments){
 
 }
 
-void *recvRaw(int sockNum){
+void *recvRaw(void *arguments){
+    struct args *arg = arguments;
+    int sockNum=arg->sockNum;
+    int option=arg->option;
+    int tracker[LIMIT];
+    int k=0;
+    for(k=0;k<LIMIT;k++){
+        tracker[k]=0;
+    }
     int ports[100];
     int j=0;
     for(j=0;j<100;j++){
@@ -184,24 +233,60 @@ void *recvRaw(int sockNum){
         }
         struct iphdr *iph = (struct iphdr *) buffer;
         struct tcphdr *tcph = (struct tcphdr *) (buffer + sizeof (struct ip));
-        if(tcph->syn && tcph->ack){
-            printf("TCP response from port: %d\n",ntohs(tcph->source));
-            ports[j]=ntohs(tcph->source);
-            j++;
-        }
-        else if(tcph->rst && tcph->ack){
-            lastPortRec=ntohs(tcph->source);
-            if(lastPortRec==LIMIT-1){
-                break;
+
+        if (option==1){ //SYN scan
+            if(tcph->syn && tcph->ack){
+                // printf("TCP response from port: %d\n",ntohs(tcph->source));
+                ports[j]=ntohs(tcph->source);
+                j++;
+            }
+            else if(tcph->rst && tcph->ack){
+                lastPortRec=ntohs(tcph->source);
+                if(lastPortRec==LIMIT-1){
+                    break;
+                }
             }
         }
+        else if (option==2){ //FIN Scan
+            // if(!(tcph->rst && tcph->ack)){
+            //     printf("TCP response from port: %d\n",ntohs(tcph->source));
+            //     ports[j]=ntohs(tcph->source);
+            //     j++;
+            // }
+            tracker[ntohs(tcph->source)]=1;
+            //     printf("TCP response from port: %d\n",ntohs(tcph->source));
+
+            if(tcph->rst && tcph->ack){
+                lastPortRec=ntohs(tcph->source);
+                if(lastPortRec==LIMIT-1){
+                    break;
+                }
+            }
+            // else{
+            //     printf("TCP response from port: %d\n",ntohs(tcph->source));
+            //     ports[j]=ntohs(tcph->source);
+            //     j++;
+            //     printf("%d\n",j);
+            // }
+        }
+        tracker[443]=1;
         fflush(stdout);
         // printf("the packet saddr is %x\n",iph->saddr);
     }
     printf("Scan done on ip address 192.168.216.148\n");
     printf("PORT\t\tSTATE\n");
-    for(j=0;ports[j]!=0;j++){
-        printf("%d\t\topen\n",ports[j]);
+    
+    if(option==1){
+        for(j=0;ports[j]!=0;j++){
+            printf("%d\t\topen\n",ports[j]);
+        }
+    }
+    else if(option==2){
+        for(j=0;j<LIMIT;j++){
+            if(tracker[j]==0){
+                printf("%d\t\topen\n",j);
+            }
+        }
     }
     pthread_exit(NULL);
 }
@@ -216,9 +301,22 @@ int main (void)
         perror("Failed to create socket");
         exit(1);
     }
-     
+    int option;
+    printf("Kindly enter the scan that you want to do-\n1. SYN scan\n2. FIN scan\n3. UDP scan?\n");
+    scanf("%d",&option);
+
     struct args argForThread;
+    argForThread.option=option;
     argForThread.sockNum=s; 
+
+    switch(option){
+        case 1:break;
+        case 2:break;
+        case 3:break;
+        default:    printf("You entered the wrong option, good bye\n");
+                    exit(0);
+    }
+    
 
     pthread_t sender;
     pthread_t receiver;
@@ -226,7 +324,7 @@ int main (void)
     if(pthread_create(&sender,NULL,&sendRaw,(void *)&argForThread)!=0){
         perror("Sender Thread Error: ");
     }
-    if(pthread_create(&receiver,NULL,&recvRaw,s)!=0){
+    if(pthread_create(&receiver,NULL,&recvRaw,(void *)&argForThread)!=0){
         perror("Sender Thread Error: ");
     }
     pthread_join(sender,NULL);
